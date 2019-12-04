@@ -2,6 +2,8 @@
 # ROS import
 import rospy
 from sensor_msgs.msg import Imu
+from std_msgs.msg import String
+from std_msgs.msg import Int32
 from dynamic_reconfigure.server import Server
 
 # Other Python Imports
@@ -11,6 +13,7 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import matplotlib.font_manager
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 
 # PyOD - Import models
 from pyod.models.abod import ABOD
@@ -22,41 +25,20 @@ from pyod.models.knn import KNN
 from pyod.models.lof import LOF
 from pyod.utils.data import generate_data, get_outliers_inliers
 
-# generate random data with two features
-'''
-n_train : int, (default=1000)
-        The number of training points to generate.
+## Dictionaries for publishers and subscribers
+publishers = {}
+subscribers = {}
 
-train_only : bool, optional (default=False)
-        If true, generate train data only.
-
-n_features : int, optional (default=2)
-        The number of features (dimensions).
-'''
-
-
-df = pd.read_csv("imu_clean_data.csv")
-
-df['field.angular_velocity.x'] = df['field.angular_velocity.x'] * 100
-df['field.angular_velocity.z'] = df['field.angular_velocity.z'] * 100
-
-df.plot.scatter('field.angular_velocity.x', 'field.angular_velocity.z')
-
-from sklearn.preprocessing import MinMaxScaler
-
-scaler = MinMaxScaler(feature_range=(0, 1))
-df[['field.angular_velocity.x','field.angular_velocity.z']] = scaler.fit_transform(df[['field.angular_velocity.x','field.angular_velocity.z']])
-df[['field.angular_velocity.x','field.angular_velocity.z']].head()
-X1 = df['field.angular_velocity.x'].values.reshape(-1, 1)
-X2 = df['field.angular_velocity.z'].values.reshape(-1, 1)
-
-X = np.concatenate((X1, X2), axis=1)
-
+# Outlier detection parameters
 random_state = np.random.RandomState(42)
-outliers_fraction = 0.05
-# Define seven outlier detection tools to be compared
+outliers_fraction = 0.10
+outliers_since_last_check = 0
+MAX_OUTLIERS_BETWEEN_CHECKS = 10
+SECS_BETWEEN_OUTLIER_CHECKS = 1
+SUB_CALLS_BETWEEN_OD_RUN = 20
+# Define outlier detection classifiers
 classifiers = {
-        'Angle-based Outlier Detector (ABOD-5)': ABOD(contamination=outliers_fraction, n_neighbors=5),
+        #'Angle-based Outlier Detector (ABOD-5)': ABOD(contamination=outliers_fraction, n_neighbors=5),
         #'Angle-based Outlier Detector (ABOD-25)': ABOD(contamination=outliers_fraction, n_neighbors=25),
         #'Angle-based Outlier Detector (ABOD-50)': ABOD(contamination=outliers_fraction, n_neighbors=50),
         #'Angle-based Outlier Detector (ABOD-100)': ABOD(contamination=outliers_fraction, n_neighbors=100),
@@ -66,8 +48,8 @@ classifiers = {
         #'Feature Bagging':FeatureBagging(LOF(n_neighbors=35),contamination=outliers_fraction,check_estimator=False,random_state=random_state,),
         #'Histogram-base Outlier Detection (HBOS)': HBOS(contamination=outliers_fraction),
         'Isolation Forest': IForest(contamination=outliers_fraction,random_state=random_state, behaviour="new"),
-        'K Nearest Neighbors (KNN-5)': KNN(contamination=outliers_fraction, n_neighbors=5),
-        'K Nearest Neighbors (KNN-25)': KNN(contamination=outliers_fraction, n_neighbors=25),
+        #'K Nearest Neighbors (KNN-5)': KNN(contamination=outliers_fraction, n_neighbors=5),
+        #'K Nearest Neighbors (KNN-25)': KNN(contamination=outliers_fraction, n_neighbors=25),
         #'K Nearest Neighbors (KNN-50)': KNN(contamination=outliers_fraction, n_neighbors=50),
         #'K Nearest Neighbors (KNN-100)': KNN(contamination=outliers_fraction, n_neighbors=100),
         #'K Nearest Neighbors (KNN-500)': KNN(contamination=outliers_fraction, n_neighbors=500),
@@ -75,67 +57,118 @@ classifiers = {
         #'Average KNN': KNN(method='mean',contamination=outliers_fraction)
 }
 
-xx, yy = np.meshgrid(np.linspace(0, 1, 200), np.linspace(0, 1, 200))
+# List index
+MAX_INDEX = 100
+ARRAYS_FILLED_ONCE = False 
+index = 0
+# Lists to hold imu data
+imu_ang_x_data = [0] * MAX_INDEX
+imu_ang_y_data = [0] * MAX_INDEX
+imu_ang_z_data = [0] * MAX_INDEX
 
-for i, (clf_name, clf) in enumerate(classifiers.items()):
-    start = time.time()
-    clf.fit(X)
-    # predict raw anomaly score
-    scores_pred = clf.decision_function(X) * -1
+def run_outlier_detection():
+    global imu_ang_x_data, imu_ang_y_data, imu_ang_z_data, outliers_since_last_check
+    imu_data = [imu_ang_x_data, imu_ang_y_data, imu_ang_z_data]
+    X = np.transpose(np.array(imu_data))
+    #print(X)
 
-    # prediction of a datapoint category outlier or inlier
-    y_pred = clf.predict(X)
-    n_inliers = len(y_pred) - np.count_nonzero(y_pred)
-    n_outliers = np.count_nonzero(y_pred == 1)
+    for i, (clf_name, clf) in enumerate(classifiers.items()):
+        start = time.time()
+        clf.fit(X)
+        # predict raw anomaly score
+        scores_pred = clf.decision_function(X) * -1
 
-    print("time taken (seconds):", time.time() - start)
+        # prediction of a datapoint category outlier or inlier
+        y_pred = clf.predict(X)
+        n_inliers = len(y_pred) - np.count_nonzero(y_pred)
+        n_outliers = np.count_nonzero(y_pred == 1)
 
-    plt.figure(figsize=(10, 10))
+        outliers_since_last_check += n_outliers
+        publishers['imu_outliers']['publisher'].publish(n_outliers)
 
-    # copy of dataframe
-    dfx = df
-    dfx['outlier'] = y_pred.tolist()
+        print("Time taken (seconds):", time.time() - start)
+        print('OUTLIERS:', n_outliers, '|||| INLIERS:', n_inliers, clf_name)
 
-    # IX1 - inlier feature 1,  IX2 - inlier feature 2
-    IX1 = np.array(dfx['field.angular_velocity.x'][dfx['outlier'] == 0]).reshape(-1, 1)
-    IX2 = np.array(dfx['field.angular_velocity.z'][dfx['outlier'] == 0]).reshape(-1, 1)
+        #sub_calls = subscribers['imu']['calls']
+        #print("Total subscriber calls: {}".format(sub_calls))
 
-    # OX1 - outlier feature 1, OX2 - outlier feature 2
-    OX1 = dfx['field.angular_velocity.x'][dfx['outlier'] == 1].values.reshape(-1, 1)
-    OX2 = dfx['field.angular_velocity.z'][dfx['outlier'] == 1].values.reshape(-1, 1)
+def check_outliers():
+    global outliers_since_last_check
+    status = ""
+    if(outliers_since_last_check > MAX_OUTLIERS_BETWEEN_CHECKS):
+        status = "FAULT DETECTED"
+    else:
+        status = "Good"
+    publishers['imu_outlier_status']['publisher'].publish(status)
 
-    print('OUTLIERS:', n_outliers, '|||| INLIERS:', n_inliers, clf_name)
+def update_imu_data_callback(data):
+    global imu_ang_x_data, imu_ang_y_data, imu_ang_z_data, subscribers, index, ARRAYS_FILLED_ONCE, RUN_VALID
+    imu_ang_x_data[index] = data.angular_velocity.x
+    imu_ang_y_data[index] = data.angular_velocity.y
+    imu_ang_z_data[index] = data.angular_velocity.z
+    index = (index + 1) % MAX_INDEX
+    subscribers['imu']['calls'] += 1
 
-    # threshold value to consider a datapoint inlier or outlier
-    threshold = stats.scoreatpercentile(scores_pred, 100 * outliers_fraction)
+    if(index % SUB_CALLS_BETWEEN_OD_RUN == 0):
+        RUN_VALID = True
+    else:
+        RUN_VALID = False
 
-    # decision function calculates the raw anomaly score for every point
-    Z = clf.decision_function(np.c_[xx.ravel(), yy.ravel()]) * -1
-    Z = Z.reshape(xx.shape)
+    if((ARRAYS_FILLED_ONCE == False) and (index == MAX_INDEX - 1)):
+        ARRAYS_FILLED_ONCE = True
 
-    # fill blue map colormap from minimum anomaly score to threshold value
-    #plt.contourf(xx, yy, Z, levels=np.linspace(Z.min(), threshold, 7), cmap=plt.cm.Blues_r)
+def initializeSubscribers():
+    """ Initialize ROS subscribers. """
+    global subscribers
+    subscribers['imu'] = {}
+    subscribers['imu']['subscriber'] = rospy.Subscriber("imu", Imu, update_imu_data_callback)
+    subscribers['imu']['calls'] = 0
 
-    # draw red contour line where anomaly score is equal to thresold
-    a = plt.contour(xx, yy, Z, levels=[threshold], linewidths=2, colors='red')
+def initializePublishers():
+    """ Initialize ROS publishers. """
+    global publishers
+    publishers['imu_outlier_status'] = {}
+    publishers['imu_outlier_status']['publisher'] = rospy.Publisher('OD/imu_outlier_status', String, queue_size=1)
+    publishers['imu_outlier_status']['calls'] = 0
 
-    # fill orange contour lines where range of anomaly score is from threshold to maximum anomaly score
-    #plt.contourf(xx, yy, Z, levels=[threshold, Z.max()], colors='orange')
+    publishers['imu_outliers'] = {}
+    publishers['imu_outliers']['publisher'] = rospy.Publisher('OD/imu_outliers', Int32, queue_size=1)
+    publishers['imu_outliers']['calls'] = 0
 
-    b = plt.scatter(IX1, IX2, c='white', s=20, edgecolor='k')
+def main():
+    """ Main program. """
+    global outliers_since_last_check
 
-    c = plt.scatter(OX1, OX2, c='black', s=20, edgecolor='k')
+    initializePublishers()
+    initializeSubscribers()
 
-    plt.axis('tight')
+    rospy.init_node('OutlierDetectionROS')
+    # Initialize dynamic_reconfigure
+    #server = Server(faultToleranceConfig, serverCallback)
+    rate = rospy.Rate(200)
+    seq = 0
+    
+    curr_time = time.time()
+    prev_time = curr_time
+    while not rospy.is_shutdown():
+        curr_time = time.time()
+        #rospy.loginfo("Seq number: {}".format(seq))
+        seq += 1
 
-    # loc=2 is used for the top left corner
-    plt.legend(
-        [a.collections[0], b, c],
-        ['learned decision function', 'inliers', 'outliers'],
-        prop=matplotlib.font_manager.FontProperties(size=20),
-        loc=2)
+        if(ARRAYS_FILLED_ONCE and RUN_VALID):
+            run_outlier_detection()
 
-    plt.xlim((0, 1))
-    plt.ylim((0, 1))
-    plt.title(clf_name)
-    plt.show()
+        if(curr_time - prev_time > SECS_BETWEEN_OUTLIER_CHECKS):
+            check_outliers()
+            outliers_since_last_check = 0
+            prev_time = curr_time
+
+        rate.sleep()
+
+if __name__ == '__main__':
+    rospy.loginfo("Starting OutlierDetectionROS node...")
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
+
