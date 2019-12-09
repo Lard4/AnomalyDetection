@@ -1,3 +1,12 @@
+###
+### Original source: https://www.analyticsvidhya.com/blog/2019/02/outlier-detection-python-pyod/
+###
+### Modified and redisgned to fit an anomaly detection ROS topic for a
+### fault tolerant robot for CPE 446 at Cal Poly SLO.
+###
+### Authors: Lakshay Arora, Kevin Dixson, Sukhman Marok
+### 
+
 import time
 
 import numpy as np
