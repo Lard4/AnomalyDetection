@@ -31,7 +31,7 @@ n_features : int, optional (default=2)
 '''
 
 
-df = pd.read_csv("train.csv")
+df = pd.read_csv("train_bad.csv")
 
 df.plot.scatter('Item_MRP', 'Item_Outlet_Sales')
 
@@ -50,7 +50,7 @@ outliers_fraction = 0.01
 # Define seven outlier detection tools to be compared
 classifiers = {
         'Angle-based Outlier Detector (ABOD-5)': ABOD(contamination=outliers_fraction, n_neighbors=5),
-        'Angle-based Outlier Detector (ABOD-25)': ABOD(contamination=outliers_fraction, n_neighbors=25),
+        #'Angle-based Outlier Detector (ABOD-25)': ABOD(contamination=outliers_fraction, n_neighbors=25),
         #'Angle-based Outlier Detector (ABOD-50)': ABOD(contamination=outliers_fraction, n_neighbors=50),
         #'Angle-based Outlier Detector (ABOD-100)': ABOD(contamination=outliers_fraction, n_neighbors=100),
         #'Angle-based Outlier Detector (ABOD-500)': ABOD(contamination=outliers_fraction, n_neighbors=500),
@@ -117,7 +117,7 @@ for i, (clf_name, clf) in enumerate(classifiers.items()):
 
     b = plt.scatter(IX1, IX2, c='white', s=20, edgecolor='k')
 
-    c = plt.scatter(OX1, OX2, c='black', s=20, edgecolor='k')
+    c = plt.scatter(OX1, OX2, c='red', marker="x", s=60, edgecolor='k')
 
     plt.axis('tight')
 
